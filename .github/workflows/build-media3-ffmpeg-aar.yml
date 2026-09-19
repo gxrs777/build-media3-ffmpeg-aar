@@ -1,9 +1,8 @@
 name: build-media3-ffmpeg-aar
-
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main, master ]
 
 env:
   MEDIA3_TAG: 1.11.1
@@ -19,7 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          repository: androidx/media
+          ref: ${{ env.MEDIA3_TAG }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -28,10 +28,15 @@ jobs:
           distribution: temurin
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install NDK
-        run: sdkmanager "ndk;${{ env.NDK_VERSION }}"
+      - name: Accept licenses and install NDK + CMake
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "ndk;${{ env.NDK_VERSION }}" "cmake;3.31.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Clone FFmpeg source into jni/ffmpeg
         run: |
@@ -62,7 +67,6 @@ jobs:
           FFMPEG_MODULE_PATH="libraries/decoder_ffmpeg/src/main"
 
           if [ -f "$JNI/build_ffmpeg.sh" ]; then
-            # 修正：补回 $FFMPEG_MODULE_PATH，严格按官方顺序传参
             bash "$JNI/build_ffmpeg.sh" "$FFMPEG_MODULE_PATH" "$NDK" "${{ env.HOST }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
           else
             echo "未找到 build_ffmpeg.sh，请检查该tag的jni构建方式"; exit 1

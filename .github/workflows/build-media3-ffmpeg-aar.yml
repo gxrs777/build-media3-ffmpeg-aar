@@ -9,13 +9,13 @@ on:
 
 env:
   MEDIA3_TAG: "1.11.1"
-  NDK_VERSION: "28.2.13676358"  # 匹配 Media3 1.11.1 项目要求，解决 CXX1104
-  CMAKE_VERSION: "3.22.1"       # AGP 在 NDK 28 下兼容的版本
+  NDK_VERSION: "25.2.9519653"
+  CMAKE_VERSION: "3.31.1"
   JAVA_VERSION: "17"
   FFMPEG_REF: "release/6.0"
   ANDROID_API: "24"
   HOST: "linux-x86_64"
-  ABIS: "armeabi-v7a arm64-v8a"
+  ABIS: "armeabi-v7a,arm64-v8a"   # 改为逗号分隔，防止被当成带空格的单个参数
   DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"
 
 jobs:
@@ -47,15 +47,11 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
           echo "NDK_PATH=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
-      - name: Configure local.properties (解决 NDK 路径检测)
-        run: |
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          echo "ndk.dir=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> local.properties
-
       - name: Inspect jni layout
         working-directory: libraries/decoder_ffmpeg/src/main/jni
         run: |
-          pwd && ls -la
+          pwd
+          ls -la
 
       - name: Clone FFmpeg source into jni/ffmpeg
         working-directory: libraries/decoder_ffmpeg/src/main/jni
@@ -77,15 +73,18 @@ jobs:
           EOF
           fi
 
-      - name: Build ffmpeg static libs (修复 ABI 参数)
+      - name: Build ffmpeg static libs (修复 ABI 与 NDK 环境)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }} # 强制注入 NDK 路径
         run: |
           set -e
           JNI="libraries/decoder_ffmpeg/src/main/jni"
           MODULE="libraries/decoder_ffmpeg/src/main"
-          NDK="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          NDK="$ANDROID_NDK_HOME"
 
           if [ -f "$JNI/build_ffmpeg.sh" ]; then
-            # 参数顺序修正为: module ndk host abis api decoders
+            # 参数顺序: module ndk host abis api decoders
+            # 使用逗号分隔的 ABI，并用引号包裹防止 shell 拆分
             bash "$JNI/build_ffmpeg.sh" "$MODULE" "$NDK" "${{ env.HOST }}" "${{ env.ABIS }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
           else
             echo "未找到 build_ffmpeg.sh"; exit 1
@@ -109,9 +108,9 @@ jobs:
             echo "module=lib-decoder-ffmpeg" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build AAR (移除失效参数)
+      - name: Build AAR (移除 Gradle 废弃参数)
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
         run: |
           ./gradlew :${{ steps.mod.outputs.module }}:assembleRelease --no-daemon
 

@@ -7,7 +7,7 @@ on:
 
 env:
   MEDIA3_TAG: 1.11.1
-  NDK_VERSION: 25.2.9519653
+  NDK_VERSION: 28.2.13676358          # 改成项目要求的版本
   HOST: linux-x86_64
   ANDROID_API: 24
   DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"

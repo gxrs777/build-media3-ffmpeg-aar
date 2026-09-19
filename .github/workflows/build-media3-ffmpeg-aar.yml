@@ -1,22 +1,22 @@
-name: build-media3-ffmpeg-aar
+name: Build Media3 FFmpeg AAR
+
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
 
 env:
   MEDIA3_TAG: 1.11.1
   NDK_VERSION: 25.2.9519653
   HOST: linux-x86_64
-  ABIS: armeabi-v7a arm64-v8a
   ANDROID_API: 24
-  DECODERS: aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw
+  DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Media3 source
+        uses: actions/checkout@v4
         with:
           repository: androidx/media
           ref: ${{ env.MEDIA3_TAG }}
@@ -27,15 +27,15 @@ jobs:
           java-version: 17
           distribution: temurin
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (v4)
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
 
-      - name: Accept licenses and install NDK + CMake
+      - name: Accept licenses and Install NDK & CMake
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "ndk;${{ env.NDK_VERSION }}" "cmake;3.31.1"
+          yes | sdkmanager --licenses
+          sdkmanager "ndk;${{ env.NDK_VERSION }}" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Clone FFmpeg source into jni/ffmpeg
@@ -63,11 +63,15 @@ jobs:
         run: |
           set -e
           JNI="libraries/decoder_ffmpeg/src/main/jni"
-          NDK="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          
+          # 严格按照脚本要求的参数顺序传参
           FFMPEG_MODULE_PATH="libraries/decoder_ffmpeg/src/main"
+          NDK="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          HOST_PLATFORM="${{ env.HOST }}"
+          ABI="${{ env.ANDROID_API }}"
 
           if [ -f "$JNI/build_ffmpeg.sh" ]; then
-            bash "$JNI/build_ffmpeg.sh" "$FFMPEG_MODULE_PATH" "$NDK" "${{ env.HOST }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
+            bash "$JNI/build_ffmpeg.sh" "$FFMPEG_MODULE_PATH" "$NDK" "$HOST_PLATFORM" "$ABI" ${{ env.DECODERS }}
           else
             echo "未找到 build_ffmpeg.sh，请检查该tag的jni构建方式"; exit 1
           fi
@@ -92,8 +96,6 @@ jobs:
           fi
 
       - name: Build AAR
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
         run: |
           ./gradlew :${{ steps.mod.outputs.module }}:assembleRelease \
             -Pandroid.injected.build.abi=armeabi-v7a,arm64-v8a \
@@ -116,3 +118,4 @@ jobs:
         with:
           name: media3-ffmpeg-aar
           path: ${{ env.AAR }}
+

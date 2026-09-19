@@ -3,81 +3,55 @@ name: build-media3-ffmpeg-aar
 on:
   workflow_dispatch:
   push:
-    branches: [main]          # 改你默认分支；推 yaml 也会自动跑一次
-    paths:
-      - '.github/workflows/build-media3-ffmpeg-aar.yml'
-  # 正式出包可开 tag 触发：
-  # push:
-  #   tags: ['ffmpeg-*']
+    branches: [main]
 
 env:
-  MEDIA3_TAG: "1.11.1"
-  NDK_VERSION: "25.2.9519653"
-  CMAKE_VERSION: "3.31.1"
-  JAVA_VERSION: "17"
-  FFMPEG_REF: "release/6.0"
-  ANDROID_API: "24"           # 低于23链接会挂，24更稳 
-  HOST: "linux-x86_64"
-  ABIS: "armeabi-v7a arm64-v8a"   # 空格分隔，传给 build_ffmpeg.sh
-  DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"
+  MEDIA3_TAG: 1.11.1
+  NDK_VERSION: 25.2.9519653
+  HOST: linux-x86_64
+  ABIS: armeabi-v7a arm64-v8a
+  ANDROID_API: 24
+  DECODERS: aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Media3 tag
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          repository: androidx/media
-          ref: ${{ env.MEDIA3_TAG }}
-          fetch-depth: 1
+          ref: main
 
-      - name: Setup Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
+          java-version: 17
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Setup Android SDK (不装废弃 tools)
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Accept licenses + install NDK/CMake
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "ndk;${{ env.NDK_VERSION }}" "cmake;${{ env.CMAKE_VERSION }}"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
-          echo "NDK_PATH=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
-
-      - name: Inspect jni layout
-        working-directory: libraries/decoder_ffmpeg/src/main/jni
-        run: |
-          pwd
-          ls -la
+      - name: Install NDK
+        run: sdkmanager "ndk;${{ env.NDK_VERSION }}"
 
       - name: Clone FFmpeg source into jni/ffmpeg
-        working-directory: libraries/decoder_ffmpeg/src/main/jni
         run: |
-          if [ ! -d ffmpeg/.git ]; then
-            git clone --depth 1 --branch "${{ env.FFMPEG_REF }}" https://git.ffmpeg.org/ffmpeg.git ffmpeg
+          set -e
+          JNI="libraries/decoder_ffmpeg/src/main/jni"
+          mkdir -p "$JNI"
+          if [ ! -d "$JNI/ffmpeg" ]; then
+            git clone --depth 1 --branch release/6.0 https://git.ffmpeg.org/ffmpeg.git "$JNI/ffmpeg"
           fi
-          ls ffmpeg/configure
 
       - name: Patch configure flags (parsers/demuxer/protocol)
-        working-directory: libraries/decoder_ffmpeg/src/main/jni
         run: |
-          if [ -f ffmpeg_command.txt ]; then
-            cat >> ffmpeg_command.txt <<'EOF'
-          --enable-decoder=aac,aac_latm,mp2,mp3,ac3,eac3,flac,opus,pcm_s16le,pcm_alaw,pcm_mulaw
+          set -e
+          JNI="libraries/decoder_ffmpeg/src/main/jni"
+          if [ -f "$JNI/ffmpeg_command.txt" ]; then
+            cat >> "$JNI/ffmpeg_command.txt" <<'EOF'
           --enable-parser=aac,ac3,mpegaudio
           --enable-demuxer=mpegts
           --enable-protocol=file,tcp,udp,rtp,http,https
           EOF
-          fi
-          if [ -f build_ffmpeg.sh ]; then
-            grep -q "enable-parser=aac,ac3,mpegaudio" build_ffmpeg.sh || \
-              sed -i 's#\(^\s*\)./configure#\1export EXTRA_FFMPEG_FLAGS="--enable-parser=aac,ac3,mpegaudio --enable-demuxer=mpegts --enable-protocol=file,tcp,udp,rtp,http,https"; ./configure#' build_ffmpeg.sh || true
           fi
 
       - name: Build ffmpeg static libs
@@ -85,10 +59,11 @@ jobs:
           set -e
           JNI="libraries/decoder_ffmpeg/src/main/jni"
           NDK="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          FFMPEG_MODULE_PATH="libraries/decoder_ffmpeg/src/main"
 
           if [ -f "$JNI/build_ffmpeg.sh" ]; then
-            # 最小改动：按官方顺序传 NDK、HOST、ABIS、API、DECODERS
-            bash "$JNI/build_ffmpeg.sh" "$NDK" "${{ env.HOST }}" "${{ env.ABIS }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
+            # 修正：补回 $FFMPEG_MODULE_PATH，严格按官方顺序传参
+            bash "$JNI/build_ffmpeg.sh" "$FFMPEG_MODULE_PATH" "$NDK" "${{ env.HOST }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
           else
             echo "未找到 build_ffmpeg.sh，请检查该tag的jni构建方式"; exit 1
           fi

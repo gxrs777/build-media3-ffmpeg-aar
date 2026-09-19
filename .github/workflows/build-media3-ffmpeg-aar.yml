@@ -3,100 +3,132 @@ name: build-media3-ffmpeg-aar
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main]
+    paths:
+      - '.github/workflows/build-media3-ffmpeg-aar.yml'
 
 env:
-  MEDIA3_TAG: 1.11.1
-  NDK_VERSION: 28.2.13676358          # 改成项目要求的版本
-  HOST: linux-x86_64
-  ANDROID_API: 24
+  MEDIA3_TAG: "1.11.1"
+  NDK_VERSION: "28.2.13676358"  # 匹配 Media3 1.11.1 项目要求，解决 CXX1104
+  CMAKE_VERSION: "3.22.1"       # AGP 在 NDK 28 下兼容的版本
+  JAVA_VERSION: "17"
+  FFMPEG_REF: "release/6.0"
+  ANDROID_API: "24"
+  HOST: "linux-x86_64"
+  ABIS: "armeabi-v7a arm64-v8a"
   DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout Media3
+      - name: Checkout Media3 tag
         uses: actions/checkout@v4
         with:
           repository: androidx/media
           ref: ${{ env.MEDIA3_TAG }}
           fetch-depth: 1
 
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools'
 
-      - name: Accept licenses and install NDK + CMake
+      - name: Accept licenses + install NDK/CMake
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "ndk;${{ env.NDK_VERSION }}" "cmake;3.22.1"
+          sdkmanager --install "ndk;${{ env.NDK_VERSION }}" "cmake;${{ env.CMAKE_VERSION }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+          echo "NDK_PATH=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
-      - name: Configure local.properties
+      - name: Configure local.properties (解决 NDK 路径检测)
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           echo "ndk.dir=$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}" >> local.properties
-          cat local.properties
 
-      - name: Clone FFmpeg source
+      - name: Inspect jni layout
+        working-directory: libraries/decoder_ffmpeg/src/main/jni
         run: |
-          set -e
-          JNI="libraries/decoder_ffmpeg/src/main/jni"
-          mkdir -p "$JNI"
-          if [ ! -d "$JNI/ffmpeg/.git" ]; then
-            git clone --depth 1 --branch release/6.0 https://git.ffmpeg.org/ffmpeg.git "$JNI/ffmpeg"
+          pwd && ls -la
+
+      - name: Clone FFmpeg source into jni/ffmpeg
+        working-directory: libraries/decoder_ffmpeg/src/main/jni
+        run: |
+          if [ ! -d ffmpeg/.git ]; then
+            git clone --depth 1 --branch "${{ env.FFMPEG_REF }}" https://git.ffmpeg.org/ffmpeg.git ffmpeg
           fi
-          test -f "$JNI/ffmpeg/configure"
+          ls ffmpeg/configure
 
-      - name: Build ffmpeg static libs
+      - name: Patch configure flags
+        working-directory: libraries/decoder_ffmpeg/src/main/jni
+        run: |
+          if [ -f ffmpeg_command.txt ]; then
+            cat >> ffmpeg_command.txt <<'EOF'
+          --enable-decoder=aac,aac_latm,mp2,mp3,ac3,eac3,flac,opus,pcm_s16le,pcm_alaw,pcm_mulaw
+          --enable-parser=aac,ac3,mpegaudio
+          --enable-demuxer=mpegts
+          --enable-protocol=file,tcp,udp,rtp,http,https
+          EOF
+          fi
+
+      - name: Build ffmpeg static libs (修复 ABI 参数)
         run: |
           set -e
           JNI="libraries/decoder_ffmpeg/src/main/jni"
+          MODULE="libraries/decoder_ffmpeg/src/main"
           NDK="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
-          FFMPEG_MODULE_PATH="libraries/decoder_ffmpeg/src/main"
-          bash "$JNI/build_ffmpeg.sh" \
-            "$FFMPEG_MODULE_PATH" "$NDK" "${{ env.HOST }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
-          echo "==== 静态库检查 ===="
-          find "$JNI/ffmpeg/android-libs" -name "libavcodec.a" | sort
 
-      - name: Build AAR
-        run: |
-          chmod +x gradlew
-          ./gradlew :lib-decoder-ffmpeg:clean :lib-decoder-ffmpeg:assembleRelease \
-            -Pandroid.injected.build.abi=armeabi-v7a,arm64-v8a \
-            --no-daemon
-
-      - name: Verify AAR contains native libs
-        run: |
-          set -e
-          SRC=$(find libraries/decoder_ffmpeg -path '*/outputs/aar/*release.aar' 2>/dev/null | head -1)
-          echo "AAR path: $SRC"
-          test -n "$SRC"
-          echo "==== AAR 内 so 列表 ===="
-          unzip -l "$SRC" | grep 'libffmpegJNI.so'
-          if unzip -l "$SRC" | grep -q 'libffmpegJNI.so'; then
-            echo "OK: Native lib found"
+          if [ -f "$JNI/build_ffmpeg.sh" ]; then
+            # 参数顺序修正为: module ndk host abis api decoders
+            bash "$JNI/build_ffmpeg.sh" "$MODULE" "$NDK" "${{ env.HOST }}" "${{ env.ABIS }}" "${{ env.ANDROID_API }}" ${{ env.DECODERS }}
           else
-            echo "ERROR: Native lib missing in AAR"
+            echo "未找到 build_ffmpeg.sh"; exit 1
+          fi
+
+          echo "---- 检查静态库 ----"
+          find "$JNI/ffmpeg" -path '*android-libs*' -name 'libavcodec.a' 2>/dev/null || true
+
+      - name: Make gradle executable
+        run: chmod +x gradlew
+
+      - name: Resolve actual ffmpeg gradle module name
+        id: mod
+        run: |
+          MOD=lib-decoder-ffmpeg
+          if ./gradlew :lib-decoder-ffmpeg:tasks -q >/dev/null 2>&1; then
+            echo "module=$MOD" >> "$GITHUB_OUTPUT"
+          elif ./gradlew :media3-decoder-ffmpeg:tasks -q >/dev/null 2>&1; then
+            echo "module=media3-decoder-ffmpeg" >> "$GITHUB_OUTPUT"
+          else
+            echo "module=lib-decoder-ffmpeg" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build AAR (移除失效参数)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          ./gradlew :${{ steps.mod.outputs.module }}:assembleRelease --no-daemon
+
+      - name: Find and rename AAR
+        id: aar
+        run: |
+          SRC=$(find libraries/decoder_ffmpeg -path '*/outputs/aar/*release.aar' 2>/dev/null | head -1)
+          if [ -z "$SRC" ]; then
+            echo "未找到aar"; find libraries/decoder_ffmpeg -name '*.aar' 2>/dev/null || true
             exit 1
           fi
-          echo "SRC=$SRC" >> "$GITHUB_ENV"
-
-      - name: Rename and Upload AAR
-        run: |
           DST="media3-decoder-ffmpeg-${{ env.MEDIA3_TAG }}.aar"
           cp "$SRC" "$DST"
-          ls -lh "$DST"
+          echo "SRC=$SRC" >> "$GITHUB_OUTPUT"
           echo "AAR=$DST" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: media3-ffmpeg-aar

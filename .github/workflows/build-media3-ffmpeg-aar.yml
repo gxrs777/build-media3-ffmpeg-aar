@@ -12,6 +12,7 @@ env:
   JDK_VERSION: "17"
   FFMPEG_REF: "release/6.0"
   HOST: "linux-x86_64"
+  API_LEVEL: "24"
   DECODERS: "aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw"
 
 jobs:
@@ -55,7 +56,7 @@ jobs:
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
 
-      - name: Clone FFmpeg source (GitHub mirror)
+      - name: Clone FFmpeg source
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
         run: |
           if [ ! -d ffmpeg/.git ]; then
@@ -63,41 +64,40 @@ jobs:
           fi
           ls ffmpeg/configure
 
-      - name: Build FFmpeg static libs (armeabi-v7a + arm64-v8a)
+      - name: Build FFmpeg static libs
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
         run: |
           set -e
           MODULE=".."
           NDK="$ANDROID_NDK_HOME"
-          for abi in armeabi-v7a arm64-v8a; do
-            echo "===== Building $abi ====="
-            # 注意：这里不再传 API 参数，否则 24 会被当成解码器
-            bash build_ffmpeg.sh "$MODULE" "$NDK" "${{ env.HOST }}" "$abi" ${{ env.DECODERS }}
-          done
+          bash build_ffmpeg.sh "$MODULE" "$NDK" "${{ env.HOST }}" "${{ env.API_LEVEL }}" ${{ env.DECODERS }}
           echo "---- Check static libs ----"
           find ffmpeg/android-libs -name 'libavcodec.a' -print
 
-      - name: Patch build.gradle.kts to add abiFilters
+      - name: Patch build.gradle.kts to add abiFilters and ndkVersion
         working-directory: media3/libraries/decoder_ffmpeg
         run: |
           python3 - <<'EOF'
           path = "build.gradle.kts"
           with open(path) as f:
               content = f.read()
+
           if "abiFilters" not in content:
               marker = "android {"
               insert = '''
-          defaultConfig {
-            ndk {
-              abiFilters += listOf("armeabi-v7a", "arm64-v8a")
-            }
-          }'''
+            ndkVersion = "25.2.9519653"
+            defaultConfig {
+              ndk {
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+              }
+            }'''
               content = content.replace(marker, marker + insert, 1)
+
           with open(path, "w") as f:
               f.write(content)
           print("Patched build.gradle.kts")
           EOF
-          grep -n "abiFilters" build.gradle.kts
+          grep -n "abiFilters\|ndkVersion" build.gradle.kts
 
       - name: Make gradlew executable
         working-directory: media3

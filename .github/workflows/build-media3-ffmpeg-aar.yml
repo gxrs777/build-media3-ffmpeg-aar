@@ -1,8 +1,6 @@
 name: Build Media3 Ffmpeg AAR
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -10,21 +8,15 @@ env:
   NDK_VERSION: '25.2.9519653'
   HOST: 'linux-x86_64'
   API_LEVEL: '24'
-  FFMPEG_REF: 'n6.0'
-  MEDIA3_TAG: '1.2.0'
+  FFMPEG_REF: 'release/6.0'
+  MEDIA3_TAG: '1.11.1'
   DECODERS: 'aac aac_latm mp2 mp3 ac3 eac3 flac opus pcm_s16le pcm_alaw pcm_mulaw'
-  ANDROID_NDK_HOME: '/usr/local/lib/android/sdk/ndk/25.2.9519653'
-  ANDROID_SDK_ROOT: '/usr/local/lib/android/sdk'
-  # 强制使用 Node 24 运行时以解决弃用警告
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up job
-        run: echo "Starting job..."
-
       - name: Checkout Media3 source
         uses: actions/checkout@v4
         with:
@@ -38,14 +30,15 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: 'temurin'
 
-      - name: Set up Android SDK and NDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          # 显式指定包，避免默认请求已废弃的 tools 包导致失败[1](@ref)
           packages: 'platform-tools'
-      
-      - name: Install NDK
+
+      - name: Install NDK and CMake
         run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "ndk;${{ env.NDK_VERSION }}" "cmake;3.22.1"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
@@ -62,6 +55,14 @@ jobs:
             git clone --depth 1 --branch ${{ env.FFMPEG_REF }} https://github.com/FFmpeg/FFmpeg.git ffmpeg
           fi
           ls ffmpeg/configure
+
+      - name: Patch build_ffmpeg.sh (remove obsolete --disable-avresample)
+        working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
+        run: |
+          # FFmpeg 6.0 已移除 avresample，直接删除该选项
+          sed -i '/--disable-avresample/d' build_ffmpeg.sh
+          echo "检查是否还存在 avresample:"
+          grep avresample build_ffmpeg.sh || echo "已移除"
 
       - name: Build FFmpeg static libs
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni

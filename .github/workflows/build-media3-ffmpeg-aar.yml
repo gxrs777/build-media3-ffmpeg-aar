@@ -42,11 +42,19 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
-      - name: Write local.properties
+      - name: Write local.properties (sdk.dir only, no ndk.dir)
         working-directory: media3
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          echo "ndk.dir=$ANDROID_NDK_HOME" >> local.properties
+          cat local.properties
+
+      - name: Unify NDK version across all native modules
+        working-directory: media3
+        run: |
+          echo "Replace NDK 28.2.13676358 with ${{ env.NDK_VERSION }} in all gradle files..."
+          find . \( -name "*.gradle" -o -name "*.gradle.kts" \) -print0 | xargs -0 sed -i 's/28\.2\.13676358/${{ env.NDK_VERSION }}/g'
+          echo "Check remaining old NDK references:"
+          grep -rn "28.2.13676358" --include="*.gradle" --include="*.gradle.kts" . || echo "none"
 
       - name: Clone FFmpeg source
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
@@ -59,10 +67,8 @@ jobs:
       - name: Patch build_ffmpeg.sh (remove obsolete --disable-avresample)
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
         run: |
-          # FFmpeg 6.0 已移除 avresample，直接删除该选项
           sed -i '/--disable-avresample/d' build_ffmpeg.sh
-          echo "检查是否还存在 avresample:"
-          grep avresample build_ffmpeg.sh || echo "已移除"
+          grep avresample build_ffmpeg.sh || echo "avresample option removed"
 
       - name: Build FFmpeg static libs
         working-directory: media3/libraries/decoder_ffmpeg/src/main/jni
@@ -74,7 +80,7 @@ jobs:
           echo "---- Check static libs ----"
           find ffmpeg/android-libs -name 'libavcodec.a' -print
 
-      - name: Patch build.gradle.kts to add abiFilters and ndkVersion
+      - name: Patch decoder_ffmpeg build.gradle.kts to add abiFilters
         working-directory: media3/libraries/decoder_ffmpeg
         run: |
           python3 - <<'EOF'
